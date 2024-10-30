@@ -148,12 +148,6 @@ end
 ---@param encoding string utf-8|utf-16|utf-32| defaults to utf-16
 ---@return integer byte (utf-8) index of `encoding` index `index` in `line`
 function M._str_byteindex_enc(line, index, encoding)
-  local len = #line
-  if index > len then
-    -- LSP spec: if character > line length, default to the line length.
-    -- https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#position
-    return len
-  end
   if not encoding then
     encoding = 'utf-16'
   end
@@ -173,6 +167,7 @@ function M._str_byteindex_enc(line, index, encoding)
 end
 
 local _str_utfindex_enc = M._str_utfindex_enc
+local _str_byteindex_enc = M._str_byteindex_enc
 
 --- Replaces text in a range with new text.
 ---
@@ -338,7 +333,12 @@ local function get_line_byte_from_position(bufnr, position, offset_encoding)
   -- character
   if col > 0 then
     local line = get_line(bufnr, position.line) or ''
-    return M._str_byteindex_enc(line, col, offset_encoding or 'utf-16')
+    local ok, result
+    ok, result = pcall(_str_byteindex_enc, line, col, offset_encoding)
+    if ok then
+      return result
+    end
+    return math.min(#line, col)
   end
   return col
 end
@@ -495,15 +495,14 @@ function M.apply_text_edits(text_edits, bufnr, offset_encoding)
         e.end_col = last_line_len
         has_eol_text_edit = true
       else
-        -- If the replacement is over the end of a line (i.e. e.end_col is equal to the line length and the
+        -- If the replacement is over the end of a line (i.e. e.end_col is out of bounds and the
         -- replacement text ends with a newline We can likely assume that the replacement is assumed
         -- to be meant to replace the newline with another newline and we need to make sure this
         -- doesn't add an extra empty line. E.g. when the last line to be replaced contains a '\r'
         -- in the file some servers (clangd on windows) will include that character in the line
         -- while nvim_buf_set_text doesn't count it as part of the line.
         if
-          e.end_col >= last_line_len
-          and text_edit.range['end'].character > e.end_col
+          e.end_col > last_line_len
           and #text_edit.newText > 0
           and string.sub(text_edit.newText, -1) == '\n'
         then

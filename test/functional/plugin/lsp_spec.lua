@@ -3560,21 +3560,21 @@ describe('LSP', function()
           range = {
             ["end"] = {
               character = 8,
-              line = 3,
+              line = 9
             },
             start = {
               character = 6,
-              line = 3,
+              line = 9
             }
           },
           selectionRange = {
             ["end"] = {
               character = 8,
-              line = 3,
+              line = 9
             },
             start = {
               character = 6,
-              line = 3,
+              line = 9
             }
           },
           uri = "file:///home/jiangyinzuo/hello.cpp"
@@ -3597,21 +3597,21 @@ describe('LSP', function()
           range = {
             ["end"] = {
               character = 8,
-              line = 2
+              line = 8
             },
             start = {
               character = 6,
-              line = 2
+              line = 8
             }
           },
           selectionRange = {
             ["end"] = {
               character = 8,
-              line = 2
+              line = 8
             },
             start = {
               character = 6,
-              line = 2
+              line = 8
             }
           },
           uri = "file:///home/jiangyinzuo/hello.cpp"
@@ -3623,16 +3623,8 @@ describe('LSP', function()
           },
         })
         local client_id = vim.lsp.start({ name = 'dummy', cmd = server.cmd })
-        local handler = require 'vim.lsp.handlers'['typeHierarchy/subtypes']
-        local bufnr = vim.api.nvim_get_current_buf()
-        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
-          'class B : public A{};',
-          'class C : public B{};',
-          'class D1 : public C{};',
-          'class D2 : public C{};',
-          'class E : public D1, D2 {};',
-        })
-        handler(nil, clangd_response, { client_id = client_id, bufnr = bufnr })
+        local handler = require'vim.lsp.handlers'['typeHierarchy/subtypes']
+        handler(nil, clangd_response, { client_id = client_id, bufnr = 1 })
         return vim.fn.getqflist()
       ]=])
 
@@ -3642,7 +3634,7 @@ describe('LSP', function()
           col = 7,
           end_col = 0,
           end_lnum = 0,
-          lnum = 4,
+          lnum = 10,
           module = '',
           nr = 0,
           pattern = '',
@@ -3656,7 +3648,7 @@ describe('LSP', function()
           col = 7,
           end_col = 0,
           end_lnum = 0,
-          lnum = 3,
+          lnum = 9,
           module = '',
           nr = 0,
           pattern = '',
@@ -3715,16 +3707,8 @@ describe('LSP', function()
           },
         })
         local client_id = vim.lsp.start({ name = 'dummy', cmd = server.cmd })
-        local handler = require 'vim.lsp.handlers'['typeHierarchy/subtypes']
-        local bufnr = vim.api.nvim_get_current_buf()
-        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
-          'package mylist;',
-          '',
-          'public class MyList {',
-          ' static class Inner extends MyList{}',
-          '~}',
-        })
-        handler(nil, jdtls_response, { client_id = client_id, bufnr = bufnr })
+        local handler = require'vim.lsp.handlers'['typeHierarchy/subtypes']
+        handler(nil, jdtls_response, { client_id = client_id, bufnr = 1 })
         return vim.fn.getqflist()
       ]=])
 
@@ -3794,21 +3778,21 @@ describe('LSP', function()
           range = {
             ["end"] = {
               character = 8,
-              line = 3,
+              line = 9
             },
             start = {
               character = 6,
-              line = 3,
+              line = 9
             }
           },
           selectionRange = {
             ["end"] = {
               character = 8,
-              line = 3,
+              line = 9
             },
             start = {
               character = 6,
-              line = 3
+              line = 9
             }
           },
           uri = "file:///home/jiangyinzuo/hello.cpp"
@@ -3831,21 +3815,21 @@ describe('LSP', function()
           range = {
             ["end"] = {
               character = 8,
-              line = 2
+              line = 8
             },
             start = {
               character = 6,
-              line = 2
+              line = 8
             }
           },
           selectionRange = {
             ["end"] = {
               character = 8,
-              line = 2
+              line = 8
             },
             start = {
               character = 6,
-              line = 2
+              line = 8
             }
           },
           uri = "file:///home/jiangyinzuo/hello.cpp"
@@ -3857,17 +3841,8 @@ describe('LSP', function()
           },
         })
         local client_id = vim.lsp.start({ name = 'dummy', cmd = server.cmd })
-        local handler = require 'vim.lsp.handlers'['typeHierarchy/supertypes']
-        local bufnr = vim.api.nvim_get_current_buf()
-        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
-          'class B : public A{};',
-          'class C : public B{};',
-          'class D1 : public C{};',
-          'class D2 : public C{};',
-          'class E : public D1, D2 {};',
-        })
-
-        handler(nil, clangd_response, { client_id = client_id, bufnr = bufnr })
+        local handler = require'vim.lsp.handlers'['typeHierarchy/supertypes']
+        handler(nil, clangd_response, { client_id = client_id, bufnr = 1 })
         return vim.fn.getqflist()
       ]=])
 
@@ -3877,7 +3852,7 @@ describe('LSP', function()
           col = 7,
           end_col = 0,
           end_lnum = 0,
-          lnum = 4,
+          lnum = 10,
           module = '',
           nr = 0,
           pattern = '',
@@ -3891,7 +3866,7 @@ describe('LSP', function()
           col = 7,
           end_col = 0,
           end_lnum = 0,
-          lnum = 3,
+          lnum = 9,
           module = '',
           nr = 0,
           pattern = '',
@@ -3950,16 +3925,8 @@ describe('LSP', function()
           },
         })
         local client_id = vim.lsp.start({ name = 'dummy', cmd = server.cmd })
-        local handler = require 'vim.lsp.handlers'['typeHierarchy/supertypes']
-        local bufnr = vim.api.nvim_get_current_buf()
-        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
-          'package mylist;',
-          '',
-          'public class MyList {',
-          ' static class Inner extends MyList{}',
-          '~}',
-        })
-        handler(nil, jdtls_response, { client_id = client_id, bufnr = bufnr })
+        local handler = require'vim.lsp.handlers'['typeHierarchy/supertypes']
+        handler(nil, jdtls_response, { client_id = client_id, bufnr = 1 })
         return vim.fn.getqflist()
       ]=])
 

@@ -77,7 +77,12 @@ function M.on_inlayhint(err, result, ctx, _)
     local col = position.character
     if col > 0 then
       local line = lines[position.line + 1] or ''
-      return util._str_byteindex_enc(line, col, client.offset_encoding)
+      local ok, convert_result
+      ok, convert_result = pcall(util._str_byteindex_enc, line, col, client.offset_encoding)
+      if ok then
+        return convert_result
+      end
+      return math.min(#line, col)
     end
     return col
   end
