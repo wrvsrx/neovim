@@ -635,15 +635,17 @@ describe('vim.lsp single-line folding ranges', function()
             callback(nil, {
               { startLine = 0, endLine = 0, collapsedText = 'one' },
               { startLine = 1, endLine = 1, collapsedText = 'two' },
-              { startLine = 3, endLine = 4, collapsedText = 'parent' },
+              { startLine = 3, endLine = 5, collapsedText = 'parent' },
               { startLine = 4, endLine = 4, collapsedText = 'child' },
+              { startLine = 7, endLine = 7, collapsedText = 'last one' },
+              { startLine = 8, endLine = 8, collapsedText = 'last two' },
             })
           end,
         },
       })
       vim.lsp.start({ name = 'dummy', cmd = _G.server.cmd })
     end)
-    insert('one\ntwo\nplain\nparent\nchild')
+    insert('one\ntwo\nplain\nparent\nchild\nparent tail\nplain\nlast one\nlast two')
     command([[set foldmethod=expr foldtext=v:lua.vim.lsp.foldtext() foldminlines=0 foldlevel=99]])
     command([[set foldexpr=v:lua.vim.lsp.foldexpr()]])
   end)
@@ -654,10 +656,10 @@ describe('vim.lsp single-line folding ranges', function()
   it('keeps adjacent and EOF ranges as separate folds', function()
     retry(nil, nil, function()
       eq(
-        { '>1', '>1', '0', '>1', '2' },
+        { '>1', '>1', '0', '>1', '>2', '1', '0', '>1', '>1' },
         exec_lua(function()
           local levels = {}
-          for lnum = 1, 5 do
+          for lnum = 1, 9 do
             levels[lnum] = vim.lsp.foldexpr(lnum)
           end
           return levels
@@ -669,7 +671,7 @@ describe('vim.lsp single-line folding ranges', function()
       vim._foldupdate(vim.api.nvim_get_current_win(), 0, vim.api.nvim_buf_line_count(0))
     end)
     eq(
-      { 1, 1, 0, 1, 2 },
+      { 1, 1, 0, 1, 2, 1, 0, 1, 1 },
       exec_lua(function()
         return {
           vim.fn.foldlevel(1),
@@ -677,6 +679,10 @@ describe('vim.lsp single-line folding ranges', function()
           vim.fn.foldlevel(3),
           vim.fn.foldlevel(4),
           vim.fn.foldlevel(5),
+          vim.fn.foldlevel(6),
+          vim.fn.foldlevel(7),
+          vim.fn.foldlevel(8),
+          vim.fn.foldlevel(9),
         }
       end)
     )
@@ -700,6 +706,19 @@ describe('vim.lsp single-line folding ranges', function()
       { 5, 5, 'child' },
       exec_lua(function()
         return { vim.fn.foldclosed(5), vim.fn.foldclosedend(5), vim.fn.foldtextresult(5) }
+      end)
+    )
+    eq(
+      { 8, 8, 9, 9, 'last one', 'last two' },
+      exec_lua(function()
+        return {
+          vim.fn.foldclosed(8),
+          vim.fn.foldclosedend(8),
+          vim.fn.foldclosed(9),
+          vim.fn.foldclosedend(9),
+          vim.fn.foldtextresult(8),
+          vim.fn.foldtextresult(9),
+        }
       end)
     )
   end)

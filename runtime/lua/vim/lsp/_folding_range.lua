@@ -85,12 +85,14 @@ function State:evaluate()
     end
   end
 
-  local last_row = api.nvim_buf_line_count(self.bufnr) - 1
   for row, level in pairs(row_level) do
-    if row_starts[row] and row < last_row then
+    if row_starts[row] then
       level[2] = '>'
     elseif row_ends[row] and not row_starts[row] then
-      level[2] = '<'
+      local previous = row_level[row - 1]
+      if not previous or previous[1] <= level[1] then
+        level[2] = '<'
+      end
     end
   end
 
