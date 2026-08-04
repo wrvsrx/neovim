@@ -51,13 +51,15 @@ function State:evaluate()
   local row_kinds = {}
   ---@type table<integer, string?>
   local row_text = {}
+  local row_starts = {}
+  local row_ends = {}
 
   for client_id, ranges in pairs(self.client_state) do
     for _, range in ipairs(ranges) do
       local start_row = range.startLine
       local end_row = range.endLine
-      -- Ignore zero-length or invalid folds
-      if start_row < end_row then
+      -- Ignore invalid folds.
+      if start_row <= end_row then
         row_text[start_row] = range.collapsedText
 
         local kind = range.kind
@@ -77,8 +79,19 @@ function State:evaluate()
           level[1] = level[1] + 1
           row_level[row] = level
         end
-        row_level[start_row][2] = '>'
-        row_level[end_row][2] = '<'
+        row_starts[start_row] = true
+        row_ends[end_row] = true
+      end
+    end
+  end
+
+  for row, level in pairs(row_level) do
+    if row_starts[row] then
+      level[2] = '>'
+    elseif row_ends[row] and not row_starts[row] then
+      local previous = row_level[row - 1]
+      if not previous or previous[1] <= level[1] then
+        level[2] = '<'
       end
     end
   end
