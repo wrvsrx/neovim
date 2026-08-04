@@ -55,6 +55,8 @@ Capability.all[State.name] = State
 function State:evaluate()
   local row_level, row_kinds, row_text, row_virt_text =
     self.row_level, self.row_kinds, self.row_text, self.row_virt_text
+  local row_starts = {}
+  local row_ends = {}
 
   tableclear(row_level)
   tableclear(row_kinds)
@@ -65,8 +67,8 @@ function State:evaluate()
     for _, range in ipairs(ranges) do
       local start_row = range.startLine
       local end_row = range.endLine
-      -- Ignore zero-length or invalid folds
-      if start_row < end_row then
+      -- Ignore invalid folds.
+      if start_row <= end_row then
         row_text[start_row] = range.collapsedText
 
         local kind = range.kind
@@ -86,9 +88,18 @@ function State:evaluate()
           level[1] = level[1] + 1
           row_level[row] = level
         end
-        row_level[start_row][2] = '>'
-        row_level[end_row][2] = '<'
+        row_starts[start_row] = true
+        row_ends[end_row] = true
       end
+    end
+  end
+
+  local last_row = api.nvim_buf_line_count(self.bufnr) - 1
+  for row, level in pairs(row_level) do
+    if row_starts[row] and row < last_row then
+      level[2] = '>'
+    elseif row_ends[row] and not row_starts[row] then
+      level[2] = '<'
     end
   end
 end

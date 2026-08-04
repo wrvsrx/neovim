@@ -4,7 +4,7 @@ local Screen = require('test.functional.ui.screen')
 local t_lsp = require('test.functional.plugin.lsp.testutil')
 
 local describe, it, before_each, after_each = t.describe, t.it, t.before_each, t.after_each
-local eq = t.eq
+local eq, retry = t.eq, t.retry
 
 local clear_notrace = t_lsp.clear_notrace
 local create_server_definition = t_lsp.create_server_definition
@@ -623,5 +623,88 @@ static int foldLevel(linenr_T lnum)
   ]],
       })
     end)
+  end)
+end)
+
+describe('vim.lsp single-line folding ranges', function()
+  clear_notrace()
+  before_each(function()
+    clear_notrace()
+    exec_lua(create_server_definition)
+    exec_lua(function()
+      _G.server = _G._create_server({
+        capabilities = { foldingRangeProvider = true },
+        handlers = {
+          ['textDocument/foldingRange'] = function(_, _, callback)
+            callback(nil, {
+              { startLine = 0, endLine = 0, collapsedText = 'one' },
+              { startLine = 1, endLine = 1, collapsedText = 'two' },
+              { startLine = 3, endLine = 4, collapsedText = 'parent' },
+              { startLine = 4, endLine = 4, collapsedText = 'child' },
+            })
+          end,
+        },
+      })
+      vim.lsp.start({ name = 'dummy', cmd = _G.server.cmd })
+    end)
+    insert('one\ntwo\nplain\nparent\nchild')
+    command([[set foldmethod=expr foldtext=v:lua.vim.lsp.foldtext() foldminlines=0 foldlevel=99]])
+    command([[set foldexpr=v:lua.vim.lsp.foldexpr()]])
+  end)
+  after_each(function()
+    api.nvim_exec_autocmds('VimLeavePre', { modeline = false })
+  end)
+
+  it('keeps adjacent and EOF ranges as separate folds', function()
+    retry(nil, nil, function()
+      eq(
+        { '>1', '>1', '0', '>1', '2' },
+        exec_lua(function()
+          local levels = {}
+          for lnum = 1, 5 do
+            levels[lnum] = vim.lsp.foldexpr(lnum)
+          end
+          return levels
+        end)
+      )
+    end)
+
+    exec_lua(function()
+      vim._foldupdate(vim.api.nvim_get_current_win(), 0, vim.api.nvim_buf_line_count(0))
+    end)
+    eq(
+      { 1, 1, 0, 1, 2 },
+      exec_lua(function()
+        return {
+          vim.fn.foldlevel(1),
+          vim.fn.foldlevel(2),
+          vim.fn.foldlevel(3),
+          vim.fn.foldlevel(4),
+          vim.fn.foldlevel(5),
+        }
+      end)
+    )
+    command('normal! zM')
+    eq(
+      { 1, 1, 2, 2, 'one', 'two' },
+      exec_lua(function()
+        return {
+          vim.fn.foldclosed(1),
+          vim.fn.foldclosedend(1),
+          vim.fn.foldclosed(2),
+          vim.fn.foldclosedend(2),
+          vim.fn.foldtextresult(1),
+          vim.fn.foldtextresult(2),
+        }
+      end)
+    )
+
+    command('normal! 5Gzo')
+    eq(
+      { 5, 5, 'child' },
+      exec_lua(function()
+        return { vim.fn.foldclosed(5), vim.fn.foldclosedend(5), vim.fn.foldtextresult(5) }
+      end)
+    )
   end)
 end)
