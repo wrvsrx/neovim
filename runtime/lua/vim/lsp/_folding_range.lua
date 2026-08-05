@@ -34,6 +34,15 @@ local Capability = require('vim.lsp._capability')
 ---
 --- Index in the form of start_row -> collapsed_text
 ---@field row_text table<integer, string?>
+---
+--- Whether cached ranges have been mapped through an edit not yet reconciled
+--- with a server response.
+---@field pending_edit boolean
+---@field edit_tick integer
+---
+--- Open folds captured after mapping the last edit, indexed by client, range,
+--- and window ID.
+---@field open_folds table<integer, table<integer, table<integer, true>>>
 local State = {
   name = 'folding_range',
   method = 'textDocument/foldingRange',
@@ -120,9 +129,53 @@ end
 ---@type table<integer, true?>
 local scheduled_foldupdate = {}
 
---- Schedule `foldupdate()` after leaving insert mode.
+--- Fold actions after a scheduled `foldupdate()`, indexed by buffer and window ID.
+---@type table<integer, table<integer, table<integer, boolean>>?>
+local scheduled_open_rows = {}
+
 ---@param bufnr integer
-local function schedule_foldupdate(bufnr)
+---@param fold_actions? table<integer, table<integer, boolean>>
+local function restore_folds(bufnr, fold_actions)
+  for winid, rows in pairs(fold_actions or {}) do
+    if
+      api.nvim_win_is_valid(winid)
+      and vim.wo[winid].foldmethod == 'expr'
+      and api.nvim_win_get_buf(winid) == bufnr
+    then
+      vim._with({ win = winid }, function()
+        for row, open in pairs(rows) do
+          if
+            not open
+            and vim.wo[winid].foldenable
+            and vim.fn.foldlevel(row + 1) > vim.wo[winid].foldlevel
+          then
+            vim.cmd(row + 1 .. 'foldclose!')
+          end
+        end
+        for row, open in pairs(rows) do
+          if open then
+            vim.cmd(row + 1 .. 'foldopen')
+          end
+        end
+      end)
+    end
+  end
+end
+
+--- Schedule `foldupdate()` after leaving insert mode.
+---@param state vim.lsp.folding_range.State
+local function schedule_foldupdate(state, open_rows)
+  local bufnr = state.bufnr
+  local edit_tick = state.edit_tick
+  local buffer_rows = scheduled_open_rows[bufnr] or {}
+  scheduled_open_rows[bufnr] = buffer_rows
+  for winid, rows in pairs(open_rows or {}) do
+    local scheduled = buffer_rows[winid] or {}
+    buffer_rows[winid] = scheduled
+    for row, open in pairs(rows) do
+      scheduled[row] = open
+    end
+  end
   if not scheduled_foldupdate[bufnr] then
     scheduled_foldupdate[bufnr] = true
     api.nvim_create_autocmd('InsertLeave', {
@@ -130,10 +183,100 @@ local function schedule_foldupdate(bufnr)
       once = true,
       callback = function()
         foldupdate(bufnr)
+        restore_folds(bufnr, scheduled_open_rows[bufnr])
+        if state.edit_tick == edit_tick then
+          state.pending_edit = false
+          state.open_folds = {}
+        end
         scheduled_foldupdate[bufnr] = nil
+        scheduled_open_rows[bufnr] = nil
       end,
     })
   end
+end
+
+---@param ranges lsp.FoldingRange[]
+---@return integer[]
+local function range_depths(ranges)
+  local depths = {}
+  for i, range in ipairs(ranges) do
+    local depth = 0
+    for j, outer in ipairs(ranges) do
+      if
+        i ~= j
+        and outer.startLine <= range.startLine
+        and range.endLine <= outer.endLine
+        and (outer.startLine < range.startLine or range.endLine < outer.endLine)
+      then
+        depth = depth + 1
+      end
+    end
+    depths[i] = depth
+  end
+  return depths
+end
+
+--- Reconcile `new_ranges` with `old_ranges`.
+--- Old ranges have already been mapped through intervening buffer edits. Matching
+--- uses overlap and nesting, not presentation fields such as `collapsedText`.
+---@param old_ranges lsp.FoldingRange[]
+---@param new_ranges lsp.FoldingRange[]
+---@return lsp.FoldingRange[] added
+---@return table<integer, integer> matches Index in the form of new -> old.
+local function reconcile_ranges(old_ranges, new_ranges)
+  local old_depths = range_depths(old_ranges)
+  local new_depths = range_depths(new_ranges)
+  local used = {}
+  local added = {}
+  local matches = {}
+
+  for i, new_range in ipairs(new_ranges) do
+    local best
+    local best_overlap = 0
+    for j, old_range in ipairs(old_ranges) do
+      if not used[j] and old_depths[j] == new_depths[i] then
+        local overlap = math.min(old_range.endLine, new_range.endLine)
+          - math.max(old_range.startLine, new_range.startLine)
+          + 1
+        if overlap > best_overlap then
+          best = j
+          best_overlap = overlap
+        end
+      end
+    end
+    if best then
+      used[best] = true
+      matches[i] = best
+    else
+      added[#added + 1] = new_range
+    end
+  end
+  return added, matches
+end
+
+---@param bufnr integer
+---@param added lsp.FoldingRange[]
+---@return table<integer, table<integer, true>>
+local function cursor_folds_to_open(bufnr, added)
+  local result = {}
+  for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
+    if vim.wo[winid].foldmethod == 'expr' then
+      local cursor_row = api.nvim_win_get_cursor(winid)[1] - 1
+      local visible = vim._with({ win = winid }, function()
+        return vim.fn.foldclosed(cursor_row + 1) == -1
+      end)
+      local rows = result[winid] or {}
+      result[winid] = rows
+      for _, range in ipairs(added) do
+        if visible and range.startLine <= cursor_row and cursor_row <= range.endLine then
+          rows[range.startLine] = true
+        else
+          rows[range.startLine] = false
+        end
+      end
+    end
+  end
+  return result
 end
 
 ---@param results table<integer,{err: lsp.ResponseError?, result: lsp.FoldingRange[]?}>
@@ -144,22 +287,150 @@ function State:multi_handler(results, ctx)
     return
   end
 
+  local edit_tick = self.edit_tick
+  local added = {}
+  local open_rows = {}
   for client_id, result in pairs(results) do
     if result.err then
       log.error('folding_range', result.err)
     else
+      local client_added, matches =
+        reconcile_ranges(self.client_state[client_id] or {}, result.result or {})
+      vim.list_extend(added, client_added)
+      for new_index, old_index in pairs(matches) do
+        for winid in pairs(((self.open_folds[client_id] or {})[old_index] or {})) do
+          local rows = open_rows[winid] or {}
+          open_rows[winid] = rows
+          rows[result.result[new_index].startLine] = true
+        end
+      end
       self.client_state[client_id] = result.result
     end
   end
   self.version = ctx.version
 
+  if self.pending_edit then
+    for winid, rows in pairs(cursor_folds_to_open(self.bufnr, added)) do
+      open_rows[winid] = vim.tbl_extend('force', open_rows[winid] or {}, rows)
+    end
+  end
   self:evaluate()
   if api.nvim_get_mode().mode:match('^i') then
     -- `foldUpdate()` is guarded in insert mode.
-    schedule_foldupdate(self.bufnr)
+    schedule_foldupdate(self, open_rows)
   else
     foldupdate(self.bufnr)
+    vim.schedule(function()
+      restore_folds(self.bufnr, open_rows)
+      if self.edit_tick == edit_tick then
+        self.pending_edit = false
+        self.open_folds = {}
+      end
+    end)
   end
+end
+
+---@param row integer
+---@param start_row integer
+---@param old_end_row integer
+---@param new_end_row integer
+---@param is_end boolean
+---@param insert_before boolean
+---@return integer
+local function map_row(row, start_row, old_end_row, new_end_row, is_end, insert_before)
+  if row < start_row then
+    return row
+  elseif row == start_row then
+    if insert_before then
+      return new_end_row
+    end
+    return is_end and new_end_row or start_row
+  elseif row < old_end_row then
+    return is_end and new_end_row or start_row
+  elseif row == old_end_row then
+    return new_end_row
+  else
+    return row + new_end_row - old_end_row
+  end
+end
+
+--- Map cached ranges through a buffer edit so `foldexpr` continues to describe
+--- the same logical folds while a fresh server response is in flight.
+---@param state vim.lsp.folding_range.State
+---@param start_row integer
+---@param start_col integer
+---@param old_row integer
+---@param old_col integer
+---@param new_row integer
+local function map_ranges(state, start_row, start_col, old_row, old_col, new_row)
+  local old_end_row = start_row + old_row
+  local new_end_row = start_row + new_row
+  local insert_before = old_row == 0 and start_col == 0 and old_col == 0
+  for client_id, ranges in pairs(state.client_state) do
+    local mapped = {}
+    local mapped_open = {}
+    for index, range in ipairs(ranges) do
+      -- A fold wholly deleted by the edit has no provisional successor.
+      if
+        not (
+          new_row == 0
+          and old_row > 0
+          and start_row <= range.startLine
+          and range.endLine < old_end_row
+        )
+      then
+        range.startLine =
+          map_row(range.startLine, start_row, old_end_row, new_end_row, false, insert_before)
+        range.endLine =
+          map_row(range.endLine, start_row, old_end_row, new_end_row, true, insert_before)
+        range.endLine = math.max(range.startLine, range.endLine)
+        mapped[#mapped + 1] = range
+        mapped_open[#mapped] = (state.open_folds[client_id] or {})[index]
+      end
+    end
+    state.client_state[client_id] = mapped
+    state.open_folds[client_id] = mapped_open
+  end
+  state:evaluate()
+end
+
+---@param state vim.lsp.folding_range.State
+local function capture_open_folds(state)
+  state.open_folds = {}
+  for client_id, ranges in pairs(state.client_state) do
+    local client_folds = {}
+    state.open_folds[client_id] = client_folds
+    for index, range in ipairs(ranges) do
+      local windows = {}
+      client_folds[index] = windows
+      for _, winid in ipairs(vim.fn.win_findbuf(state.bufnr)) do
+        if
+          vim.wo[winid].foldmethod == 'expr'
+          and vim._with({ win = winid }, function()
+            return vim.fn.foldclosed(range.startLine + 1) == -1
+          end)
+        then
+          windows[winid] = true
+        end
+      end
+    end
+  end
+end
+
+---@param state vim.lsp.folding_range.State
+---@return table<integer, table<integer, boolean>>
+local function mapped_open_folds(state)
+  local actions = {}
+  for client_id, ranges in pairs(state.client_state) do
+    for index, range in ipairs(ranges) do
+      for winid in pairs(((state.open_folds[client_id] or {})[index] or {})) do
+        local rows = actions[winid] or {}
+        actions[winid] = rows
+        rows[range.startLine] = true
+      end
+    end
+  end
+  return actions
 end
 
 ---@param err lsp.ResponseError?
@@ -198,6 +469,9 @@ function State:reset()
   self.row_level = {}
   self.row_kinds = {}
   self.row_text = {}
+  self.pending_edit = false
+  self.edit_tick = 0
+  self.open_folds = {}
 end
 
 --- Initialize `state` and event hooks, then request folding ranges.
@@ -217,68 +491,23 @@ function State:new(bufnr)
       end
     end,
     --- Sync changed rows with their previous foldlevels before applying new ones.
-    on_bytes = function(_, _, _, start_row, start_col, _, old_row, old_col, _, new_row, new_col, _)
+    on_bytes = function(_, _, _, start_row, start_col, _, old_row, old_col, _, new_row, _, _)
       local state = State.active[bufnr]
       if state == nil then
         return true
       end
-      local row_level = state.row_level
-      if next(row_level) == nil then
+      state.edit_tick = state.edit_tick + 1
+      if next(state.row_level) == nil then
+        state.pending_edit = true
         return
       end
-      local row_delta = new_row - old_row
-      if row_delta > 0 then
-        local first = start_row + old_row + 1
-        if start_col == 0 and old_row == 0 and old_col == 0 then
-          first = start_row
-        end
-        local level = { -1 }
-        local open_windows = {}
-        if old_row == 0 and first > start_row then
-          local start_level = row_level[start_row]
-          if start_level then
-            -- A line expanded by an in-line edit remains in the same folds until refreshed.
-            level = { start_level[1] }
-            if start_level[2] == '>' then
-              for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
-                if
-                  vim.wo[winid].foldmethod == 'expr'
-                  and vim._with({ win = winid }, function()
-                    return vim.fn.foldclosed(start_row + 1) == -1
-                  end)
-                then
-                  open_windows[#open_windows + 1] = winid
-                end
-              end
-            end
-          end
-        end
-        vim._list_insert(row_level, first, first + row_delta - 1, level)
-        if #open_windows > 0 then
-          vim.schedule(function()
-            for _, winid in ipairs(open_windows) do
-              if api.nvim_win_is_valid(winid) and api.nvim_win_get_buf(winid) == bufnr then
-                vim._with({ win = winid }, function()
-                  vim.cmd(start_row + 1 .. 'foldopen')
-                end)
-              end
-            end
-          end)
-        end
-        -- If the previous row ends a fold,
-        -- Nvim treats the first row after consecutive `-1`s as a new fold start,
-        -- which is not the desired behavior.
-        local prev_level = row_level[first - 1]
-        if prev_level and prev_level[2] == '<' then
-          row_level[first] = { prev_level[1] - 1 }
-        end
-      elseif row_delta < 0 then
-        local first = start_row + new_row + 1
-        if start_col == 0 and new_row == 0 and new_col == 0 then
-          first = start_row
-        end
-        vim._list_remove(row_level, first, first - row_delta - 1)
-      end
+      state.pending_edit = true
+      capture_open_folds(state)
+      map_ranges(state, start_row, start_col, old_row, old_col, new_row)
+      local actions = mapped_open_folds(state)
+      vim.schedule(function()
+        restore_folds(bufnr, actions)
+      end)
     end,
   })
   api.nvim_create_autocmd('LspNotify', {

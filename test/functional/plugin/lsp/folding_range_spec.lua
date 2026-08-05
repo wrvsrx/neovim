@@ -736,8 +736,16 @@ describe('vim.lsp single-line folding ranges', function()
         },
       })
     end)
-
-    command('normal! zMggzo')
+    command('normal! zMgg')
+    retry(nil, nil, function()
+      eq(
+        'task',
+        exec_lua(function()
+          return vim.fn.foldtextresult(1)
+        end)
+      )
+    end)
+    command('normal! zo')
     eq(
       -1,
       exec_lua(function()
@@ -746,7 +754,9 @@ describe('vim.lsp single-line folding ranges', function()
     )
 
     exec_lua(function()
-      _G.fold_ranges[1].endLine = 1
+      _G.fold_ranges = {
+        { startLine = 0, endLine = 1, collapsedText = 'task' },
+      }
     end)
     feed('J')
     retry(nil, nil, function()
@@ -759,7 +769,9 @@ describe('vim.lsp single-line folding ranges', function()
     end)
 
     exec_lua(function()
-      _G.fold_ranges[1].endLine = 0
+      _G.fold_ranges = {
+        { startLine = 0, endLine = 0, collapsedText = 'task' },
+      }
     end)
     feed('J')
     retry(nil, nil, function()
@@ -785,8 +797,16 @@ describe('vim.lsp single-line folding ranges', function()
         },
       })
     end)
-
-    command('normal! zMggzo')
+    command('normal! zMgg')
+    retry(nil, nil, function()
+      eq(
+        'task',
+        exec_lua(function()
+          return vim.fn.foldtextresult(1)
+        end)
+      )
+    end)
+    command('normal! zo')
     eq(
       -1,
       exec_lua(function()
@@ -795,12 +815,14 @@ describe('vim.lsp single-line folding ranges', function()
     )
 
     exec_lua(function()
-      _G.fold_ranges[1].endLine = 2
+      _G.fold_ranges = {
+        { startLine = 0, endLine = 2, collapsedText = 'task' },
+      }
       vim.api.nvim_buf_set_text(0, 0, 0, 0, -1, { 'one', 'detail', 'tail' })
     end)
     retry(nil, nil, function()
       eq(
-        { 11, '>1', '1', '1', -1 },
+        { 11, '>1', '1', '<1', -1 },
         exec_lua(function()
           return {
             vim.api.nvim_buf_line_count(0),
@@ -812,5 +834,138 @@ describe('vim.lsp single-line folding ranges', function()
         end)
       )
     end)
+  end)
+
+  it('keeps new folds at an edited visible cursor open', function()
+    exec_lua(function()
+      _G.fold_ranges = {}
+      vim.api.nvim_exec_autocmds('LspNotify', {
+        buffer = 0,
+        data = {
+          client_id = assert(vim.lsp.get_clients({ bufnr = 0 })[1]).id,
+          method = 'textDocument/didChange',
+        },
+      })
+    end)
+    retry(nil, nil, function()
+      eq(
+        '0',
+        exec_lua(function()
+          return vim.lsp.foldexpr(1)
+        end)
+      )
+    end)
+
+    command('normal! zMgg')
+    exec_lua(function()
+      _G.fold_ranges = {
+        { startLine = 0, endLine = 0 },
+        { startLine = 3, endLine = 3 },
+      }
+      vim.api.nvim_buf_set_text(0, 0, 0, 0, 3, { 'ONE' })
+      vim.api.nvim_exec_autocmds('LspNotify', {
+        buffer = 0,
+        data = {
+          client_id = assert(vim.lsp.get_clients({ bufnr = 0 })[1]).id,
+          method = 'textDocument/didChange',
+        },
+      })
+    end)
+    retry(nil, nil, function()
+      eq(
+        { -1, 4, 1, 1 },
+        exec_lua(function()
+          return {
+            vim.fn.foldclosed(1),
+            vim.fn.foldclosed(4),
+            vim.fn.foldlevel(1),
+            vim.fn.foldlevel(4),
+          }
+        end)
+      )
+    end)
+  end)
+
+  it('preserves nested fold state while boundaries grow and shrink', function()
+    exec_lua(function()
+      _G.fold_ranges = {
+        { startLine = 0, endLine = 4 },
+        { startLine = 1, endLine = 2 },
+      }
+      vim.api.nvim_exec_autocmds('LspNotify', {
+        buffer = 0,
+        data = {
+          client_id = assert(vim.lsp.get_clients({ bufnr = 0 })[1]).id,
+          method = 'textDocument/didChange',
+        },
+      })
+    end)
+    retry(nil, nil, function()
+      eq(
+        '>1',
+        exec_lua(function()
+          return vim.lsp.foldexpr(1)
+        end)
+      )
+    end)
+
+    command('normal! zMggzo2Gzo')
+    eq(
+      { -1, -1 },
+      exec_lua(function()
+        return { vim.fn.foldclosed(1), vim.fn.foldclosed(2) }
+      end)
+    )
+
+    exec_lua(function()
+      _G.fold_ranges = {
+        { startLine = 0, endLine = 6 },
+        { startLine = 1, endLine = 4 },
+      }
+      vim.api.nvim_buf_set_lines(0, 2, 2, false, { 'nested one', 'nested two' })
+    end)
+    retry(nil, nil, function()
+      eq(
+        { 11, -1, -1 },
+        exec_lua(function()
+          return { vim.api.nvim_buf_line_count(0), vim.fn.foldclosed(1), vim.fn.foldclosed(2) }
+        end)
+      )
+    end)
+
+    exec_lua(function()
+      _G.fold_ranges = {
+        { startLine = 0, endLine = 4 },
+        { startLine = 1, endLine = 2 },
+      }
+      vim.api.nvim_buf_set_lines(0, 2, 4, false, {})
+    end)
+    retry(nil, nil, function()
+      eq(
+        { 9, -1, -1 },
+        exec_lua(function()
+          return { vim.api.nvim_buf_line_count(0), vim.fn.foldclosed(1), vim.fn.foldclosed(2) }
+        end)
+      )
+    end)
+  end)
+
+  it('preserves fold state when leaving and returning to a buffer', function()
+    command('normal! zMggzo')
+    eq(
+      -1,
+      exec_lua(function()
+        return vim.fn.foldclosed(1)
+      end)
+    )
+
+    command('new')
+    command('buffer #')
+    eq(
+      -1,
+      exec_lua(function()
+        return vim.fn.foldclosed(1)
+      end)
+    )
   end)
 end)
