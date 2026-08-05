@@ -632,7 +632,7 @@ describe('vim.lsp single-line folding ranges', function()
         capabilities = { foldingRangeProvider = true },
         handlers = {
           ['textDocument/foldingRange'] = function(_, _, callback)
-            callback(nil, {
+            callback(nil, _G.fold_ranges or {
               { startLine = 0, endLine = 0, collapsedText = 'one' },
               { startLine = 1, endLine = 1, collapsedText = 'two' },
               { startLine = 3, endLine = 5, collapsedText = 'parent' },
@@ -721,5 +721,54 @@ describe('vim.lsp single-line folding ranges', function()
         }
       end)
     )
+  end)
+
+  it('preserves an open fold when joins shrink it to one line', function()
+    exec_lua(function()
+      _G.fold_ranges = {
+        { startLine = 0, endLine = 2, collapsedText = 'task' },
+      }
+      vim.api.nvim_exec_autocmds('LspNotify', {
+        buffer = 0,
+        data = {
+          client_id = assert(vim.lsp.get_clients({ bufnr = 0 })[1]).id,
+          method = 'textDocument/didChange',
+        },
+      })
+    end)
+
+    command('normal! zMggzo')
+    eq(
+      -1,
+      exec_lua(function()
+        return vim.fn.foldclosed(1)
+      end)
+    )
+
+    exec_lua(function()
+      _G.fold_ranges[1].endLine = 1
+    end)
+    feed('J')
+    retry(nil, nil, function()
+      eq(
+        { 8, '>1', -1 },
+        exec_lua(function()
+          return { vim.api.nvim_buf_line_count(0), vim.lsp.foldexpr(1), vim.fn.foldclosed(1) }
+        end)
+      )
+    end)
+
+    exec_lua(function()
+      _G.fold_ranges[1].endLine = 0
+    end)
+    feed('J')
+    retry(nil, nil, function()
+      eq(
+        { 7, '>1', -1 },
+        exec_lua(function()
+          return { vim.api.nvim_buf_line_count(0), vim.lsp.foldexpr(1), vim.fn.foldclosed(1) }
+        end)
+      )
+    end)
   end)
 end)
