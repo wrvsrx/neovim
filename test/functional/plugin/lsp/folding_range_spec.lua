@@ -771,4 +771,46 @@ describe('vim.lsp single-line folding ranges', function()
       )
     end)
   end)
+
+  it('preserves an open single-line fold when an edit expands it', function()
+    exec_lua(function()
+      _G.fold_ranges = {
+        { startLine = 0, endLine = 0, collapsedText = 'task' },
+      }
+      vim.api.nvim_exec_autocmds('LspNotify', {
+        buffer = 0,
+        data = {
+          client_id = assert(vim.lsp.get_clients({ bufnr = 0 })[1]).id,
+          method = 'textDocument/didChange',
+        },
+      })
+    end)
+
+    command('normal! zMggzo')
+    eq(
+      -1,
+      exec_lua(function()
+        return vim.fn.foldclosed(1)
+      end)
+    )
+
+    exec_lua(function()
+      _G.fold_ranges[1].endLine = 2
+      vim.api.nvim_buf_set_text(0, 0, 0, 0, -1, { 'one', 'detail', 'tail' })
+    end)
+    retry(nil, nil, function()
+      eq(
+        { 11, '>1', '1', '1', -1 },
+        exec_lua(function()
+          return {
+            vim.api.nvim_buf_line_count(0),
+            vim.lsp.foldexpr(1),
+            vim.lsp.foldexpr(2),
+            vim.lsp.foldexpr(3),
+            vim.fn.foldclosed(1),
+          }
+        end)
+      )
+    end)
+  end)
 end)

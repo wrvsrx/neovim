@@ -232,7 +232,39 @@ function State:new(bufnr)
         if start_col == 0 and old_row == 0 and old_col == 0 then
           first = start_row
         end
-        vim._list_insert(row_level, first, first + row_delta - 1, { -1 })
+        local level = { -1 }
+        local open_windows = {}
+        if old_row == 0 and first > start_row then
+          local start_level = row_level[start_row]
+          if start_level then
+            -- A line expanded by an in-line edit remains in the same folds until refreshed.
+            level = { start_level[1] }
+            if start_level[2] == '>' then
+              for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
+                if
+                  vim.wo[winid].foldmethod == 'expr'
+                  and vim._with({ win = winid }, function()
+                    return vim.fn.foldclosed(start_row + 1) == -1
+                  end)
+                then
+                  open_windows[#open_windows + 1] = winid
+                end
+              end
+            end
+          end
+        end
+        vim._list_insert(row_level, first, first + row_delta - 1, level)
+        if #open_windows > 0 then
+          vim.schedule(function()
+            for _, winid in ipairs(open_windows) do
+              if api.nvim_win_is_valid(winid) and api.nvim_win_get_buf(winid) == bufnr then
+                vim._with({ win = winid }, function()
+                  vim.cmd(start_row + 1 .. 'foldopen')
+                end)
+              end
+            end
+          end)
+        end
         -- If the previous row ends a fold,
         -- Nvim treats the first row after consecutive `-1`s as a new fold start,
         -- which is not the desired behavior.
