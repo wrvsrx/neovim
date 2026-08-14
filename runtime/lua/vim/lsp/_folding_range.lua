@@ -34,6 +34,7 @@ local Capability = require('vim.lsp._capability')
 ---
 --- Index in the form of start_row -> collapsed_text
 ---@field row_text table<integer, string?>
+---@field pending_insert? boolean whether the latest edit occurred in Insert/Select mode
 local State = {
   name = 'folding_range',
   method = 'textDocument/foldingRange',
@@ -119,16 +120,24 @@ end
 local scheduled_foldupdate = {}
 
 --- Schedule `foldupdate()` after leaving insert mode.
----@param bufnr integer
-local function schedule_foldupdate(bufnr)
+---@param state vim.lsp.folding_range.State
+local function schedule_foldupdate(state)
+  local bufnr = state.bufnr
   if not scheduled_foldupdate[bufnr] then
     scheduled_foldupdate[bufnr] = true
     api.nvim_create_autocmd('InsertLeave', {
       buf = bufnr,
       once = true,
       callback = function()
-        foldupdate(bufnr)
         scheduled_foldupdate[bufnr] = nil
+        if vim.snippet and vim.snippet.active() then
+          schedule_foldupdate(state)
+          return
+        end
+        -- Replay the deferred evaluate() now that editing has settled, then fold.
+        state:evaluate()
+        foldupdate(bufnr)
+        state.pending_insert = nil
       end,
     })
   end
@@ -151,11 +160,17 @@ function State:multi_handler(results, ctx)
   end
   self.version = ctx.version
 
-  self:evaluate()
-  if api.nvim_get_mode().mode:match('^i') then
-    -- `foldUpdate()` is guarded in insert mode.
-    schedule_foldupdate(self.bufnr)
+  -- While editing (insert/select/active snippet), defer BOTH recomputing fold
+  -- levels and folding. evaluate() writes the new ranges into row_level, which
+  -- foldexpr() reads; if it ran now, any core fold recomputation (cursor move to
+  -- a placeholder, mode change, redraw) would close the block being edited -- so
+  -- merely deferring our own foldupdate() is not enough, evaluate() must be
+  -- deferred with it and replayed on settle.
+  if self.pending_insert or api.nvim_get_mode().mode:match('^[isS]')
+    or (vim.snippet and vim.snippet.active()) then
+    schedule_foldupdate(self)
   else
+    self:evaluate()
     foldupdate(self.bufnr)
   end
 end
@@ -248,6 +263,9 @@ function State:new(bufnr)
         client:supports_method('textDocument/foldingRange', bufnr)
         and (ev.data.method == 'textDocument/didChange' or ev.data.method == 'textDocument/didOpen')
       then
+        if ev.data.method == 'textDocument/didChange' then
+          self.pending_insert = api.nvim_get_mode().mode:match('^[isS]') ~= nil
+        end
         self:refresh(client)
       end
     end,
