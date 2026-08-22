@@ -4,6 +4,7 @@ local Screen = require('test.functional.ui.screen')
 local t_lsp = require('test.functional.plugin.lsp.testutil')
 
 local eq = t.eq
+local matches = t.matches
 local retry = t.retry
 
 local clear_notrace = t_lsp.clear_notrace
@@ -654,11 +655,31 @@ describe('vim.lsp folding updates while editing', function()
     end)
   end
 
-  local function respond(end_line)
+  local function respond_ranges(ranges)
     exec_lua(function()
       local callback = table.remove(_G.fold_callbacks, 1)
-      callback(nil, { { startLine = 0, endLine = end_line } })
+      callback(nil, ranges)
     end)
+  end
+
+  local function respond(end_line)
+    respond_ranges({ { startLine = 0, endLine = end_line } })
+  end
+
+  local function foldclosed(lnum)
+    return exec_lua('return vim.fn.foldclosed(...)', lnum)
+  end
+
+  local function cursor_folds(windows)
+    return exec_lua(function(windows)
+      local result = {}
+      for i, winid in ipairs(windows) do
+        result[i] = vim._with({ win = winid }, function()
+          return vim.fn.foldclosed('.')
+        end)
+      end
+      return result
+    end, windows)
   end
 
   local function settle()
@@ -706,6 +727,12 @@ describe('vim.lsp folding updates while editing', function()
       vim._foldupdate = function(...)
         _G.fold_update_count = _G.fold_update_count + 1
         return _G.original_foldupdate(...)
+      end
+      _G.foldopen_cursor_count = 0
+      _G.original_foldopen_cursor = vim._foldopen_cursor
+      vim._foldopen_cursor = function(...)
+        _G.foldopen_cursor_count = _G.foldopen_cursor_count + 1
+        return _G.original_foldopen_cursor(...)
       end
     end)
   end)
@@ -816,6 +843,102 @@ describe('vim.lsp folding updates while editing', function()
     respond(3)
     eq('>1', exec_lua('return vim.lsp.foldexpr(1)'))
     eq(1, exec_lua('return _G.fold_update_count'))
+  end)
+
+  it('opens a deferred fold that newly hides the cursor', function()
+    command('set foldlevel=0')
+    api.nvim_win_set_cursor(0, { 2, 0 })
+    set_mode('s')
+    request_ranges()
+    respond(3)
+
+    eq(-1, foldclosed('.'))
+    settle()
+    retry(nil, nil, function()
+      eq(-1, foldclosed('.'))
+      eq(1, exec_lua('return _G.foldopen_cursor_count'))
+    end)
+  end)
+
+  it('does not open a cursor fold during an immediate update', function()
+    command('set foldlevel=0')
+    api.nvim_win_set_cursor(0, { 2, 0 })
+    request_ranges()
+    respond(3)
+
+    eq(1, foldclosed('.'))
+    eq(0, exec_lua('return _G.foldopen_cursor_count'))
+  end)
+
+  it('preserves a fold that already hid the cursor before the deferred update', function()
+    request_ranges()
+    respond(3)
+    command('normal! zM')
+    api.nvim_win_set_cursor(0, { 2, 0 })
+    eq(1, foldclosed('.'))
+
+    set_mode('s')
+    request_ranges()
+    respond(4)
+    settle()
+    retry(nil, nil, function()
+      eq(1, foldclosed('.'))
+      eq(0, exec_lua('return _G.foldopen_cursor_count'))
+    end)
+  end)
+
+  it('keeps a closed sibling fold closed when restoring cursor visibility', function()
+    command('set foldlevel=0')
+    request_ranges()
+    respond_ranges({ { startLine = 5, endLine = 7 } })
+    eq(6, foldclosed(6))
+
+    api.nvim_win_set_cursor(0, { 2, 0 })
+    set_mode('s')
+    request_ranges()
+    respond_ranges({
+      { startLine = 0, endLine = 3 },
+      { startLine = 5, endLine = 7 },
+    })
+    settle()
+    retry(nil, nil, function()
+      eq(-1, foldclosed('.'))
+      eq(6, foldclosed(6))
+      eq(1, exec_lua('return _G.foldopen_cursor_count'))
+    end)
+  end)
+
+  it('restores cursor visibility independently in each window', function()
+    command('set foldlevel=0')
+    request_ranges()
+    respond_ranges({ { startLine = 5, endLine = 7 } })
+
+    local visible_win = api.nvim_get_current_win()
+    command('split')
+    local closed_win = api.nvim_get_current_win()
+    api.nvim_win_set_cursor(visible_win, { 2, 0 })
+    api.nvim_win_set_cursor(closed_win, { 6, 0 })
+    eq({ -1, 6 }, cursor_folds({ visible_win, closed_win }))
+
+    set_mode('s')
+    request_ranges()
+    respond_ranges({
+      { startLine = 0, endLine = 3 },
+      { startLine = 5, endLine = 7 },
+    })
+    settle()
+    retry(nil, nil, function()
+      eq({ -1, 6 }, cursor_folds({ visible_win, closed_win }))
+      eq(1, exec_lua('return _G.foldopen_cursor_count'))
+    end)
+  end)
+
+  it('rejects an invalid window when opening the cursor fold', function()
+    local ok, err = exec_lua(function()
+      return pcall(vim._foldopen_cursor, 999999)
+    end)
+    eq(false, ok)
+    matches('invalid window', err)
   end)
 
   it('does not defer a response for a non-current buffer', function()
