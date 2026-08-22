@@ -34,7 +34,15 @@ local Capability = require('vim.lsp._capability')
 ---
 --- Index in the form of start_row -> collapsed_text
 ---@field row_text table<integer, string?>
----@field pending_insert? boolean whether the latest edit occurred in Insert/Select mode
+---
+--- Whether folding updates are deferred until editing settles.
+---@field defer_refresh? boolean
+---
+--- Whether `client_state` has accepted ranges not yet reflected in the row indexes.
+---@field pending_evaluate? boolean
+---
+--- Whether a deferred settle check is already scheduled.
+---@field settle_scheduled? boolean
 local State = {
   name = 'folding_range',
   method = 'textDocument/foldingRange',
@@ -113,34 +121,50 @@ local function foldupdate(bufnr)
   end
 end
 
---- Whether `foldupdate()` is scheduled for the buffer with `bufnr`.
----
---- Index in the form of bufnr -> true?
----@type table<integer, true?>
-local scheduled_foldupdate = {}
-
---- Schedule `foldupdate()` after leaving insert mode.
----@param state vim.lsp.folding_range.State
-local function schedule_foldupdate(state)
-  local bufnr = state.bufnr
-  if not scheduled_foldupdate[bufnr] then
-    scheduled_foldupdate[bufnr] = true
-    api.nvim_create_autocmd('InsertLeave', {
-      buf = bufnr,
-      once = true,
-      callback = function()
-        scheduled_foldupdate[bufnr] = nil
-        if vim.snippet and vim.snippet.active() then
-          schedule_foldupdate(state)
-          return
-        end
-        -- Replay the deferred evaluate() now that editing has settled, then fold.
-        state:evaluate()
-        foldupdate(bufnr)
-        state.pending_insert = nil
-      end,
-    })
+--- Whether the current buffer is in a mode that can actively change its text.
+---@param bufnr integer
+---@return boolean
+local function is_editing(bufnr)
+  if api.nvim_get_current_buf() ~= bufnr then
+    return false
   end
+
+  local mode = api.nvim_get_mode().mode:sub(1, 1)
+  return mode == 'i' or mode == 'R' or mode == 'r' or mode == 's' or mode == 'S' or mode == '\19'
+end
+
+--- Apply the latest accepted folding ranges once.
+function State:apply_pending()
+  if not self.pending_evaluate then
+    return
+  end
+
+  self.pending_evaluate = nil
+  self:evaluate()
+  foldupdate(self.bufnr)
+end
+
+--- Recheck the mode after queued mode transitions have settled.
+---@param state vim.lsp.folding_range.State
+local function schedule_settle(state)
+  if state.settle_scheduled then
+    return
+  end
+
+  local bufnr = state.bufnr
+  state.settle_scheduled = true
+  vim.schedule(function()
+    state.settle_scheduled = nil
+    if State.active[bufnr] ~= state or not api.nvim_buf_is_valid(bufnr) then
+      return
+    end
+    if is_editing(bufnr) then
+      return
+    end
+
+    state.defer_refresh = nil
+    state:apply_pending()
+  end)
 end
 
 ---@param results table<integer,{err: lsp.ResponseError?, result: lsp.FoldingRange[]?}>
@@ -159,20 +183,23 @@ function State:multi_handler(results, ctx)
     end
   end
   self.version = ctx.version
+  self.pending_evaluate = true
 
-  -- While editing (insert/select/active snippet), defer BOTH recomputing fold
-  -- levels and folding. evaluate() writes the new ranges into row_level, which
-  -- foldexpr() reads; if it ran now, any core fold recomputation (cursor move to
-  -- a placeholder, mode change, redraw) would close the block being edited -- so
-  -- merely deferring our own foldupdate() is not enough, evaluate() must be
-  -- deferred with it and replayed on settle.
-  if self.pending_insert or api.nvim_get_mode().mode:match('^[isS]')
-    or (vim.snippet and vim.snippet.active()) then
-    schedule_foldupdate(self)
-  else
-    self:evaluate()
-    foldupdate(self.bufnr)
+  -- Keep both the visible row indexes and the fold tree on the previous accepted
+  -- snapshot until editing settles. A snippet can briefly enter Normal mode while
+  -- selecting its next tabstop, so its live session also starts a deferred settle
+  -- check. The scheduled check itself trusts the final mode: a snippet session may
+  -- remain active after the user leaves Select mode with Escape.
+  local snippet_active = api.nvim_get_current_buf() == self.bufnr
+    and vim.snippet
+    and vim.snippet.active()
+  if self.defer_refresh or is_editing(self.bufnr) or snippet_active then
+    self.defer_refresh = true
+    schedule_settle(self)
+    return
   end
+
+  self:apply_pending()
 end
 
 ---@param err lsp.ResponseError?
@@ -183,7 +210,7 @@ function State:handler(err, result, ctx)
 end
 
 --- Request `textDocument/foldingRange` from the server.
---- `foldupdate()` is scheduled once after the request is completed.
+--- Accepted ranges are applied once after the request is completed or editing settles.
 ---@param client? vim.lsp.Client The client whose server supports `foldingRange`.
 function State:refresh(client)
   ---@type lsp.FoldingRangeParams
@@ -211,6 +238,8 @@ function State:reset()
   self.row_level = {}
   self.row_kinds = {}
   self.row_text = {}
+  self.defer_refresh = nil
+  self.pending_evaluate = nil
 end
 
 --- Initialize `state` and event hooks, then request folding ranges.
@@ -263,10 +292,19 @@ function State:new(bufnr)
         client:supports_method('textDocument/foldingRange', bufnr)
         and (ev.data.method == 'textDocument/didChange' or ev.data.method == 'textDocument/didOpen')
       then
-        if ev.data.method == 'textDocument/didChange' then
-          self.pending_insert = api.nvim_get_mode().mode:match('^[isS]') ~= nil
+        if ev.data.method == 'textDocument/didChange' and is_editing(bufnr) then
+          self.defer_refresh = true
         end
         self:refresh(client)
+      end
+    end,
+  })
+  api.nvim_create_autocmd('ModeChanged', {
+    group = self.augroup,
+    buf = bufnr,
+    callback = function()
+      if self.defer_refresh then
+        schedule_settle(self)
       end
     end,
   })
