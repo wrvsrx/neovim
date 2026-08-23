@@ -18,8 +18,20 @@ nix develop -c make functionaltest TEST_FILE=test/functional/plugin/lsp/folding_
 ```
 
 The shell provides CMake, a C compiler, GNU Make, Ninja, pkg-config, Git, and
-StyLua. It also sets `VIMRUNTIME` to the flake's snapshot of this checkout's
-`runtime` directory.
+StyLua. Set `VIMRUNTIME` manually when running Neovim or its tests, for example:
+
+```sh
+VIMRUNTIME="$PWD/runtime" nix develop -c make functionaltest \
+  TEST_FILE=test/functional/plugin/lsp/folding_range_spec.lua
+```
+
+When working on a branch that does not contain `flake.nix`, obtain the latest
+development environment from a branch that does, for example:
+
+```sh
+nix develop 'git+file:///home/wrvsrx/Documents/neovim?ref=refs/heads/patched-0.12.4' -c cmake --version
+```
+
 Prefer these commands when the host environment does not provide the required
 Neovim build tools.
 

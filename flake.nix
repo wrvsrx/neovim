@@ -32,10 +32,6 @@
               stdenv.cc
               stylua
             ];
-
-            shellHook = ''
-              export VIMRUNTIME="${./runtime}"
-            '';
           };
         }
       );
