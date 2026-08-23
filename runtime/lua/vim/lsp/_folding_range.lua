@@ -60,8 +60,8 @@ function State:evaluate()
   local row_kinds = {}
   ---@type table<integer, string?>
   local row_text = {}
-  local row_starts = {}
-  local row_ends = {}
+  local row_starts = {} ---@type table<integer, true>
+  local row_ends = {} ---@type table<integer, integer>
 
   for client_id, ranges in pairs(self.client_state) do
     for _, range in ipairs(ranges) do
@@ -179,6 +179,7 @@ function State:apply_pending(restore_visibility)
   end
 
   local visible_windows = restore_visibility and visible_cursor_windows(self.bufnr) or {}
+  self.defer_refresh = nil
   self.pending_evaluate = nil
   self:evaluate()
   foldupdate(self.bufnr)
@@ -210,7 +211,8 @@ end
 
 ---@param results table<integer,{err: lsp.ResponseError?, result: lsp.FoldingRange[]?}>
 ---@param ctx lsp.HandlerContext
-function State:multi_handler(results, ctx)
+---@param force? boolean
+function State:multi_handler(results, ctx, force)
   -- Handling responses from outdated buffer only causes performance overhead.
   if util.buf_versions[self.bufnr] ~= ctx.version then
     return
@@ -234,7 +236,7 @@ function State:multi_handler(results, ctx)
   local snippet_active = api.nvim_get_current_buf() == self.bufnr
     and vim.snippet
     and vim.snippet.active()
-  if self.defer_refresh or is_editing(self.bufnr) or snippet_active then
+  if not force and (self.defer_refresh or is_editing(self.bufnr) or snippet_active) then
     self.defer_refresh = true
     schedule_settle(self)
     return
@@ -376,8 +378,8 @@ end
 ---@params client_id integer
 function State:on_detach(client_id)
   self.client_state[client_id] = nil
-  self:evaluate()
-  foldupdate(self.bufnr)
+  self.pending_evaluate = true
+  self:apply_pending()
 end
 
 ---@param kind lsp.FoldingRangeKind
@@ -411,6 +413,7 @@ function M.foldclose(kind, winid)
 
   -- Schedule `foldclose()` if the buffer is not up-to-date.
   if state.version == util.buf_versions[bufnr] then
+    state:apply_pending()
     state:foldclose(kind, winid)
     return
   end
@@ -420,8 +423,8 @@ function M.foldclose(kind, winid)
   end
   ---@type lsp.FoldingRangeParams
   local params = { textDocument = util.make_text_document_params(bufnr) }
-  vim.lsp.buf_request_all(bufnr, 'textDocument/foldingRange', params, function(...)
-    state:multi_handler(...)
+  vim.lsp.buf_request_all(bufnr, 'textDocument/foldingRange', params, function(results, ctx)
+    state:multi_handler(results, ctx, true)
     -- Ensure this window is still valid and buffer stays as the current buffer
     -- after the async request.
     if api.nvim_win_is_valid(winid) and api.nvim_win_get_buf(winid) == bufnr then
