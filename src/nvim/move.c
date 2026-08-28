@@ -1633,7 +1633,8 @@ void adjust_skipcol(void)
 void check_topfill(win_T *wp, bool down)
 {
   if (wp->w_topfill > 0) {
-    int n = plines_win_nofill(wp, wp->w_topline, true);
+    int n = plines_win_nofill(wp, wp->w_topline, false) - adjust_plines_for_skipcol(wp);
+    n = MIN(MAX(n, 0), wp->w_view_height);
     if (wp->w_topfill + n > wp->w_view_height) {
       if (down && wp->w_topline > 1) {
         wp->w_topline--;
