@@ -979,10 +979,25 @@ int find_wl_entry(win_T *win, linenr_T lnum)
 }
 
 // foldAdjustVisual() {{{2
-/// Adjust the Visual area to include any fold at the start or end completely.
+/// Keep the Select area visible, or include closed folds completely in the Visual area.
 void foldAdjustVisual(void)
 {
   if (!VIsual_active || !hasAnyFolding(curwin)) {
+    return;
+  }
+
+  if (VIsual_select) {
+    linenr_T lnum = MIN(VIsual.lnum, curwin->w_cursor.lnum);
+    const linenr_T last = MAX(VIsual.lnum, curwin->w_cursor.lnum);
+    while (lnum <= last) {
+      int done = DONE_NOTHING;
+      const linenr_T next = setManualFoldWin(curwin, lnum, true, true, &done);
+      if (next <= lnum) {
+        lnum++;
+      } else {
+        lnum = next;
+      }
+    }
     return;
   }
 
