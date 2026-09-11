@@ -91,6 +91,45 @@ describe('jumplist', function()
   end)
 end)
 
+describe('jump view with virtual lines', function()
+  local source = 'Xjump-view-virt-source'
+  local target = 'Xjump-view-virt-target'
+  local tags = 'Xjump-view-virt-tags'
+
+  before_each(clear)
+  after_each(function()
+    os.remove(source)
+    os.remove(target)
+    os.remove(tags)
+  end)
+
+  it('does not discard target virtual lines after repeated tag jumps', function()
+    local screen = Screen.new(40, 12)
+    write_file(source, 'test2')
+    write_file(target, 'test2')
+    write_file(tags, 'test2\t' .. target .. '\t1;"\n')
+    command('set jumpoptions+=view')
+    command('set tags=' .. tags)
+    command('edit ' .. target)
+    command('edit ' .. source)
+
+    local target_buf = fn.bufnr(target)
+    local ns = api.nvim_create_namespace('jump-view-virt-lines')
+    feed('<C-]>')
+    api.nvim_buf_set_extmark(target_buf, ns, 0, 0, {
+      virt_lines = { { { '1 file reference', 'LspCodeLens' } } },
+      virt_lines_above = true,
+    })
+    fn.winrestview({ topline = 1, topfill = 1 })
+    screen:expect({ any = 'test2' })
+    eq(1, fn.winsaveview().topfill)
+    feed('<C-O>')
+    feed('<C-]>')
+    screen:expect({ any = 'test2' })
+    eq(1, fn.winsaveview().topfill)
+  end)
+end)
+
 describe("jumpoptions=stack behaves like 'tagstack'", function()
   before_each(function()
     clear()

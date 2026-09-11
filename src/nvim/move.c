@@ -1648,6 +1648,13 @@ void check_topfill(win_T *wp, bool down)
   win_check_anchored_floats(wp);
 }
 
+void reconcile_topfill(win_T *wp)
+{
+  if (wp->w_topfill == 0 && buf_meta_total(wp->w_buffer, kMTMetaLines) > 0) {
+    wp->w_topfill = win_get_fill(wp, wp->w_topline);
+  }
+}
+
 // Scroll the screen one line down, but don't do it if it would move the
 // cursor off the screen.
 void scrolldown_clamp(void)

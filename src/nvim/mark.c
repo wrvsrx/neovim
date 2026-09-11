@@ -719,6 +719,11 @@ void mark_view_restore(fmark_T *fm)
                      && view.skipcol < linetabsize_eol(wp, wp->w_topline))
                     ? view.skipcol : 0;
   int topfill = 0;
+  if (view.topfill == 0) {
+    // A zero saved value may predate virtual lines added to the buffer.
+    reconcile_topfill(wp);
+    topfill = wp->w_topfill;
+  }
   if (view.topfill > 0) {
     const int max_topfill = win_get_fill(wp, wp->w_topline);
     if (!win_valid(wp) || !bufref_valid(&bufref) || wp->w_buffer != bufref.br_buf) {
