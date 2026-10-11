@@ -636,7 +636,9 @@ describe('vim.lsp nested folding ranges', function()
         },
         handlers = {
           ['textDocument/foldingRange'] = function(_, _, callback)
-            callback(nil, ranges)
+            if not _G.hold_folds then
+              callback(nil, ranges)
+            end
           end,
         },
       })
@@ -710,6 +712,64 @@ describe('vim.lsp nested folding ranges', function()
         }
       end)
     )
+  end)
+
+  it('preserves sparse fold boundaries while edits await a response', function()
+    local lines = { 'title', 'created', 'date', 'timezone', '' }
+    for _, name in ipairs({ 'first', 'second' }) do
+      vim.list_extend(
+        lines,
+        { name, '', 'task', '', 'property', '', 'created', '', 'event', '', 'property', '' }
+      )
+    end
+    start_server(table.concat(lines, '\n'), {
+      { startLine = 5, endLine = 15 },
+      { startLine = 7, endLine = 11 },
+      { startLine = 13, endLine = 15 },
+      { startLine = 17, endLine = 27 },
+      { startLine = 19, endLine = 23 },
+      { startLine = 25, endLine = 27 },
+    })
+    retry(nil, nil, function()
+      eq('>1', exec_lua('return vim.lsp.foldexpr(18)'))
+    end)
+    exec_lua(function()
+      _G.hold_folds = true
+      vim.wo.foldlevel = 99
+      vim.cmd('18foldclose')
+      vim.api.nvim_win_set_cursor(0, { 17, 0 })
+    end)
+    eq(18, n.fn.foldclosed(18))
+
+    -- Check the old snapshot synchronously, before a server response can repair it.
+    for _ = 1, 2 do
+      eq(
+        { '>1', '<1', 22, 32, '0' },
+        exec_lua(function()
+          vim.api.nvim_buf_set_text(0, 16, 0, 16, 0, { 'task', '', 'property', '', 'created' })
+          return {
+            vim.lsp.foldexpr(22),
+            vim.lsp.foldexpr(32),
+            vim.fn.foldclosed(22),
+            vim.fn.foldclosedend(22),
+            vim.lsp.foldexpr(33),
+          }
+        end)
+      )
+      eq(
+        { '>1', '<1', 18, 28, '0' },
+        exec_lua(function()
+          vim.api.nvim_buf_set_text(0, 16, 0, 20, 7, { '' })
+          return {
+            vim.lsp.foldexpr(18),
+            vim.lsp.foldexpr(28),
+            vim.fn.foldclosed(18),
+            vim.fn.foldclosedend(18),
+            vim.lsp.foldexpr(29),
+          }
+        end)
+      )
+    end
   end)
 
   it('prefers a fold start when ranges end and start on the same row', function()
