@@ -148,12 +148,19 @@ function State:multi_handler(results, ctx)
     return
   end
 
+  local updated = false
   for client_id, result in pairs(results) do
     if result.err then
       log.error('folding_range', result.err)
     else
       self.client_state[client_id] = result.result
+      updated = true
     end
+  end
+  -- An error supplies no new ranges. Re-evaluating the previous response would
+  -- undo the row shifts maintained by on_bytes while the request was pending.
+  if not updated then
+    return
   end
   self.version = ctx.version
 

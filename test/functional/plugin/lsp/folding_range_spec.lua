@@ -636,8 +636,11 @@ describe('vim.lsp nested folding ranges', function()
         },
         handlers = {
           ['textDocument/foldingRange'] = function(_, _, callback)
-            if not _G.hold_folds then
-              callback(nil, ranges)
+            if _G.fold_error then
+              callback({ code = -32801, message = 'request superseded' })
+              _G.fold_error_received = true
+            elseif not _G.hold_folds then
+              callback(nil, _G.fold_ranges or ranges)
             end
           end,
         },
@@ -770,6 +773,55 @@ describe('vim.lsp nested folding ranges', function()
         end)
       )
     end
+  end)
+
+  it('preserves shifted folds when a refresh returns ContentModified', function()
+    start_server('header\nfirst\nbody\nend\n\nsecond\nbody\nend', {
+      { startLine = 1, endLine = 3 },
+      { startLine = 5, endLine = 7 },
+    })
+    retry(nil, nil, function()
+      eq('>1', exec_lua('return vim.lsp.foldexpr(6)'))
+    end)
+    exec_lua(function()
+      vim.wo.foldlevel = 99
+      vim.cmd('6foldclose')
+      vim.api.nvim_win_set_cursor(0, { 1, 0 })
+      _G.fold_error = true
+      vim.api.nvim_buf_set_lines(0, 0, 0, false, { 'new', 'lines' })
+      vim.api.nvim_exec_autocmds('LspNotify', {
+        buffer = 0,
+        data = { client_id = vim.lsp.get_clients()[1].id, method = 'textDocument/didChange' },
+      })
+    end)
+    retry(nil, nil, function()
+      eq(true, exec_lua('return _G.fold_error_received'))
+    end)
+    local function check_fold()
+      eq(
+        { '>1', 8, 10 },
+        exec_lua(function()
+          return { vim.lsp.foldexpr(8), vim.fn.foldclosed(8), vim.fn.foldclosedend(8) }
+        end)
+      )
+    end
+    check_fold()
+    exec_lua(function()
+      _G.fold_error = false
+      _G.fold_ranges = {
+        { startLine = 0, endLine = 1 },
+        { startLine = 3, endLine = 5 },
+        { startLine = 7, endLine = 9 },
+      }
+      vim.api.nvim_exec_autocmds('LspNotify', {
+        buffer = 0,
+        data = { client_id = vim.lsp.get_clients()[1].id, method = 'textDocument/didChange' },
+      })
+    end)
+    retry(nil, nil, function()
+      eq('>1', exec_lua('return vim.lsp.foldexpr(1)'))
+    end)
+    check_fold()
   end)
 
   it('prefers a fold start when ranges end and start on the same row', function()
