@@ -231,8 +231,16 @@ function State:new(bufnr)
         return
       end
       local row = new_row - old_row
+      -- row_level is a sparse, zero-indexed map, not a Lua sequence. Bound
+      -- shifts by the previous buffer size, since #row_level can stop at a gap.
+      local old_last_row = api.nvim_buf_line_count(bufnr) - row - 1
       if row > 0 then
-        vim._list_insert(row_level, start_row, start_row + math.abs(row) - 1, { -1 })
+        for i = old_last_row, start_row, -1 do
+          row_level[i + row] = row_level[i]
+        end
+        for i = start_row, start_row + row - 1 do
+          row_level[i] = { -1 }
+        end
         -- If the previous row ends a fold,
         -- Nvim treats the first row after consecutive `-1`s as a new fold start,
         -- which is not the desired behavior.
@@ -241,7 +249,9 @@ function State:new(bufnr)
           row_level[start_row] = { prev_level[1] - 1 }
         end
       elseif row < 0 then
-        vim._list_remove(row_level, start_row, start_row + math.abs(row) - 1)
+        for i = start_row, old_last_row do
+          row_level[i] = row_level[i - row]
+        end
       end
     end,
   })
